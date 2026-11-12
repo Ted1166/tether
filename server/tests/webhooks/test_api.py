@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncIterator
 
 import httpx
@@ -177,3 +178,32 @@ async def test_the_audit_limit_is_validated(rig: Rig) -> None:
     async with rig.client() as client:
         response = await client.get("/audit", params={"limit": 0})
     assert response.status_code == 422
+
+
+async def test_a_refused_webhook_is_logged_with_the_reason(
+    rig: Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    rig.verifier.result = False
+    with caplog.at_level(logging.WARNING, logger="tether.webhooks"):
+        async with rig.client() as client:
+            await client.post("/webhooks/paypal", content=event_body(), headers=signed_headers())
+    assert "webhook refused: signature verification failed" in caplog.text
+
+
+async def test_an_unconfigured_webhook_route_says_so_in_the_log(
+    db: Database, caplog: pytest.LogCaptureFixture
+) -> None:
+    app = create_app(Container(database=db, webhooks=None))
+    with caplog.at_level(logging.ERROR, logger="tether.webhooks"):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://tether") as client:
+            await client.post("/webhooks/paypal", content=event_body(), headers=signed_headers())
+    assert "PAYPAL_WEBHOOK_ID is not configured" in caplog.text
+
+
+async def test_a_paypal_failure_is_logged(rig: Rig, caplog: pytest.LogCaptureFixture) -> None:
+    rig.invoices.failure = PayPalUnavailable("down", status=503)
+    with caplog.at_level(logging.ERROR, logger="tether.webhooks"):
+        async with rig.client() as client:
+            await client.post("/webhooks/paypal", content=event_body(), headers=signed_headers())
+    assert "webhook could not be processed" in caplog.text

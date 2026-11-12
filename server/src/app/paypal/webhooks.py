@@ -1,4 +1,5 @@
 import json
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -7,6 +8,8 @@ from urllib.parse import urlparse
 from app.paypal.client import PayPalClient
 from app.paypal.errors import PayPalRequestError, PayPalResponseError
 from app.schemas.webhooks import WebhookEvent, WebhookHeaders
+
+logger = logging.getLogger("tether.webhooks")
 
 VERIFY_PATH = "/v1/notifications/verify-webhook-signature"
 WEBHOOKS_PATH = "/v1/notifications/webhooks"
@@ -54,9 +57,24 @@ class WebhookVerifier:
 
         try:
             result = await self._client.request("POST", VERIFY_PATH, content=content)
-        except PayPalRequestError:
+        except PayPalRequestError as error:
+            logger.warning(
+                "PayPal refused the verification request (webhook id ending %s): %s",
+                self._webhook_id[-4:],
+                error,
+            )
             return False
-        return result.get("verification_status") == "SUCCESS"
+
+        status = result.get("verification_status")
+        if status != "SUCCESS":
+            logger.warning(
+                "PayPal reported verification_status=%s (webhook id ending %s, transmission %s)",
+                status,
+                self._webhook_id[-4:],
+                headers.transmission_id,
+            )
+            return False
+        return True
 
 
 class WebhookRegistry:

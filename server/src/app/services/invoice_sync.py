@@ -21,6 +21,7 @@ from app.schemas.records import (
 class SyncSource(StrEnum):
     IMPORT = "import"
     WEBHOOK = "webhook"
+    AGENT = "agent"
     RECONCILE = "reconcile"
 
 
@@ -167,7 +168,10 @@ class InvoiceSyncService:
     async def _record(
         self, source: SyncSource, kind: str, invoice_id: int, detail: dict[str, Any]
     ) -> None:
-        actor = AuditActor.SYSTEM if source is SyncSource.IMPORT else AuditActor.PAYPAL
+        actor = {
+            SyncSource.IMPORT: AuditActor.SYSTEM,
+            SyncSource.AGENT: AuditActor.AGENT,
+        }.get(source, AuditActor.PAYPAL)
         await self._audit.append(
             NewAuditEntry(
                 actor=actor,

@@ -46,3 +46,17 @@ class DatabaseSettings(BaseSettings):
     )
 
     database_url: str = "sqlite+aiosqlite:///./tether.db"
+
+
+class LLMSettings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="ANTHROPIC_",
+        env_file=(".env", "../.env"),
+        env_ignore_empty=True,
+        extra="ignore",
+    )
+
+    api_key: SecretStr
+    model: str = "claude-sonnet-5-5"
+    base_url: str = "https://api.anthropic.com"
+    api_version: str = "2023-06-01"

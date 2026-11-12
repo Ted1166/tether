@@ -2,13 +2,21 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AuditRow, ClientRow, InvoiceRow, WebhookEventRow
+from app.db.models import (
+    AuditRow,
+    ClientRow,
+    InvoiceRow,
+    PendingActionRow,
+    PolicyRow,
+    WebhookEventRow,
+)
 from app.lib.money import from_cents, to_cents
 from app.lib.time import utc_now
 from app.schemas.actions import InvoiceStatus
+from app.schemas.policy import Policy
 from app.schemas.records import (
     AuditRecord,
     ClientRecord,
@@ -16,6 +24,10 @@ from app.schemas.records import (
     InvoiceRecord,
     NewAuditEntry,
     NewInvoice,
+    NewPendingAction,
+    PendingActionChanges,
+    PendingActionRecord,
+    PendingActionStatus,
     WebhookEventRecord,
     WebhookEventStatus,
 )
@@ -48,6 +60,10 @@ class ClientRepository:
         self._session.add(row)
         await self._session.flush()
         return _client_record(row)
+
+    async def all(self) -> list[ClientRecord]:
+        rows = (await self._session.execute(select(ClientRow).order_by(ClientRow.id))).scalars()
+        return [_client_record(row) for row in rows]
 
     async def _row_by_email(self, email: str) -> ClientRow | None:
         query = select(ClientRow).where(ClientRow.email == email.strip().lower())
@@ -217,6 +233,111 @@ class WebhookEventRepository:
             .execution_options(populate_existing=True)
         )
         return (await self._session.execute(query)).scalar_one_or_none()
+
+
+class PendingActionRepository:
+    def __init__(self, session: AsyncSession, clock: Clock = utc_now) -> None:
+        self._session = session
+        self._clock = clock
+
+    async def create(self, new: NewPendingAction) -> PendingActionRecord:
+        row = PendingActionRow(
+            kind=new.kind,
+            status=new.status,
+            client_email=new.client_email,
+            amount_cents=to_cents(new.amount),
+            currency=new.currency,
+            summary=new.summary,
+            payload=new.payload,
+            decisions=new.decisions,
+            verdict=new.verdict,
+            rule=new.rule,
+            reason=new.reason,
+            policy_version=new.policy_version,
+            result={},
+            created_at=self._clock(),
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return _action_record(row)
+
+    async def get(self, action_id: int) -> PendingActionRecord | None:
+        row = await self._row(action_id)
+        return _action_record(row) if row else None
+
+    async def list(
+        self, status: PendingActionStatus | None = None, limit: int = 100
+    ) -> list[PendingActionRecord]:
+        query = select(PendingActionRow).order_by(PendingActionRow.id.desc()).limit(limit)
+        if status is not None:
+            query = query.where(PendingActionRow.status == status)
+        rows = (await self._session.execute(query)).scalars().all()
+        return [_action_record(row) for row in rows]
+
+    async def update(self, action_id: int, changes: PendingActionChanges) -> PendingActionRecord:
+        row = await self._row(action_id)
+        if row is None:
+            raise LookupError(f"action {action_id} does not exist")
+        for field, value in changes.model_dump(exclude_unset=True).items():
+            setattr(row, field, value)
+        await self._session.flush()
+        return _action_record(row)
+
+    async def _row(self, action_id: int) -> PendingActionRow | None:
+        query = (
+            select(PendingActionRow)
+            .where(PendingActionRow.id == action_id)
+            .execution_options(populate_existing=True)
+        )
+        return (await self._session.execute(query)).scalar_one_or_none()
+
+
+class PolicyRepository:
+    def __init__(self, session: AsyncSession, clock: Clock = utc_now) -> None:
+        self._session = session
+        self._clock = clock
+
+    async def current(self) -> Policy | None:
+        query = select(PolicyRow).order_by(PolicyRow.version.desc()).limit(1)
+        row = (await self._session.execute(query)).scalar_one_or_none()
+        return Policy.model_validate(row.data) if row else None
+
+    async def save(self, policy: Policy) -> Policy:
+        latest = (await self._session.execute(select(func.max(PolicyRow.version)))).scalar()
+        stored = policy.model_copy(update={"version": (latest or 0) + 1})
+        self._session.add(
+            PolicyRow(
+                version=stored.version,
+                data=stored.model_dump(mode="json"),
+                created_at=self._clock(),
+            )
+        )
+        await self._session.flush()
+        return stored
+
+
+def _action_record(row: PendingActionRow) -> PendingActionRecord:
+    return PendingActionRecord(
+        id=row.id,
+        kind=row.kind,
+        status=row.status,
+        client_email=row.client_email,
+        amount=from_cents(row.amount_cents),
+        currency=row.currency,
+        summary=row.summary,
+        payload=row.payload,
+        decisions=row.decisions,
+        verdict=row.verdict,
+        rule=row.rule,
+        reason=row.reason,
+        policy_version=row.policy_version,
+        invoice_id=row.invoice_id,
+        result=row.result,
+        error=row.error,
+        created_at=row.created_at,
+        decided_at=row.decided_at,
+        executed_at=row.executed_at,
+    )
 
 
 def _event_record(row: WebhookEventRow) -> WebhookEventRecord:

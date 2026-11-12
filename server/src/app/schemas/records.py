@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.actions import InvoiceStatus, Verdict
+from app.schemas.actions import ActionKind, InvoiceStatus, Verdict
 from app.schemas.invoice import PayPalInvoiceStatus
 
 
@@ -14,6 +14,15 @@ class AuditActor(StrEnum):
     OWNER = "owner"
     PAYPAL = "paypal"
     SYSTEM = "system"
+
+
+class PendingActionStatus(StrEnum):
+    PENDING = "pending"
+    EXECUTED = "executed"
+    FAILED = "failed"
+    REJECTED = "rejected"
+    BLOCKED = "blocked"
+    EXPIRED = "expired"
 
 
 class WebhookEventStatus(StrEnum):
@@ -121,3 +130,59 @@ class WebhookEventRecord(BaseModel):
     payload: dict[str, Any]
     received_at: datetime
     finished_at: datetime | None
+
+
+class NewPendingAction(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    kind: ActionKind
+    status: PendingActionStatus
+    client_email: str
+    amount: Decimal = Field(ge=0)
+    currency: str = Field(pattern=r"^[A-Z]{3}$")
+    summary: str
+    payload: dict[str, Any]
+    decisions: list[dict[str, Any]] = Field(default_factory=list)
+    verdict: Verdict
+    rule: str
+    reason: str
+    policy_version: int
+
+
+class PendingActionChanges(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    status: PendingActionStatus | None = None
+    verdict: Verdict | None = None
+    rule: str | None = None
+    reason: str | None = None
+    policy_version: int | None = None
+    invoice_id: int | None = None
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    decided_at: datetime | None = None
+    executed_at: datetime | None = None
+
+
+class PendingActionRecord(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: int
+    kind: ActionKind
+    status: PendingActionStatus
+    client_email: str
+    amount: Decimal
+    currency: str
+    summary: str
+    payload: dict[str, Any]
+    decisions: list[dict[str, Any]]
+    verdict: Verdict
+    rule: str
+    reason: str
+    policy_version: int
+    invoice_id: int | None
+    result: dict[str, Any]
+    error: str | None
+    created_at: datetime
+    decided_at: datetime | None
+    executed_at: datetime | None

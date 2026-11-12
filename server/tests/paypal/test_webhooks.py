@@ -1,4 +1,5 @@
 import json
+import logging
 
 import httpx
 import pytest
@@ -182,3 +183,31 @@ def test_events_without_an_invoice_id_yield_nothing(resource: dict[str, object])
 def test_non_invoice_events_yield_nothing_even_with_an_invoice_like_id() -> None:
     other = event(event_type="PAYMENT.CAPTURE.COMPLETED", resource={"id": INVOICE_ID})
     assert invoice_id_from_event(other) is None
+
+
+async def test_a_failure_verdict_is_logged_with_the_webhook_id_suffix(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    harness.fake.queue("POST", VERIFY, httpx.Response(200, json={"verification_status": "FAILURE"}))
+    with caplog.at_level(logging.WARNING, logger="tether.webhooks"):
+        async with harness.client() as client:
+            await WebhookVerifier(client, "WEBHOOK-ID-1602").verify(headers(), event_body())
+    assert "verification_status=FAILURE" in caplog.text
+    assert "ending 1602" in caplog.text
+    assert "WEBHOOK-ID-1602" not in caplog.text
+
+
+async def test_a_refused_verification_request_is_logged_with_paypals_reason(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    harness.fake.queue(
+        "POST",
+        VERIFY,
+        httpx.Response(400, json={"name": "INVALID_RESOURCE_ID", "message": "Invalid webhook id"}),
+    )
+    with caplog.at_level(logging.WARNING, logger="tether.webhooks"):
+        async with harness.client() as client:
+            await WebhookVerifier(client, "WEBHOOK-ID-9999").verify(headers(), event_body())
+    assert "INVALID_RESOURCE_ID" in caplog.text
+    assert "Invalid webhook id" in caplog.text
+    assert "ending 9999" in caplog.text
